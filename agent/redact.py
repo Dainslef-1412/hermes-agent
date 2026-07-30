@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # any known vendor prefix regex (e.g. opaque tokens, short OAuth codes).
 _SENSITIVE_QUERY_PARAMS = frozenset({
     "access_token",
+    "access_key",
     "refresh_token",
     "id_token",
     "token",
@@ -34,6 +35,7 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "key",
     "code",           # OAuth authorization codes
     "signature",      # pre-signed URL signatures
+    "ticket",         # messaging/WebSocket connection ticket
     "x-amz-signature",
 })
 
@@ -175,10 +177,27 @@ _YAML_ASSIGN_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Exact Feishu/Lark connection credential fields. Keep these separate from
+# _YAML_CFG_NAMES so normal diagnostics such as ``ticket_count`` or
+# ``access_key_rotation`` are not mistaken for secrets.
+_YAML_CONNECTION_FIELD_RE = re.compile(
+    r"(^[ \t]*(?:access[_\-]?key|ticket))(:[ \t]*)(['\"]?)"
+    r"([^\s&'\"\r\n]+)\3",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|access_key|ticket|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(
     rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    re.IGNORECASE,
+)
+
+# Python logging commonly renders dict arguments with single quotes. Keep this
+# narrow to connection credential fields that must be fully covered even when
+# an SDK switches from logging a URL to logging its parsed payload.
+_PY_MAPPING_CONNECTION_FIELD_RE = re.compile(
+    r"('(?:access_key|ticket)'\s*:\s*)'([^']+)'",
     re.IGNORECASE,
 )
 
@@ -300,6 +319,19 @@ _STRICT_URL_PARAM_RE = re.compile(
 # at path/query/fragment delimiters so an ``@`` elsewhere in a URL is ignored.
 _STRICT_URL_USERINFO_RE = re.compile(
     r"((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)([^/\s?#@]+)@"
+)
+
+# Absolute and network-path URL references embedded in arbitrary log text.
+# Keep this narrower than _STRICT_URL_PARAM_RE: ordinary diagnostic prose such
+# as ``decision?code=E42`` is not a URL and must remain observable.
+_LOG_URL_REFERENCE_RE = re.compile(
+    r"(?:(?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^\s\"'<>]+"
+)
+
+_LOG_HTTP_REQUEST_RE = re.compile(
+    r"\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\s+"
+    r"[^ \t\r\n\"']+",
+    re.IGNORECASE,
 )
 
 # HTTP access logs often use a relative request target rather than a full URL:
@@ -461,6 +493,26 @@ def _redact_strict_url_credentials(text: str) -> str:
 
     text = _STRICT_URL_PARAM_RE.sub(_redact_param, text)
     return _STRICT_URL_USERINFO_RE.sub(_redact_userinfo, text)
+
+
+def redact_log_text(text: str) -> str:
+    """Redact secrets at a logging sink without damaging non-URL prose.
+
+    Tool and browser output intentionally preserve round-trip URLs. Logs are a
+    terminal sink, so absolute/network URL references and HTTP request targets
+    receive strict query/userinfo masking after the ordinary redaction pass.
+    """
+    redacted = redact_sensitive_text(text)
+    redacted = _LOG_URL_REFERENCE_RE.sub(
+        lambda match: _redact_strict_url_credentials(match.group(0)),
+        redacted,
+    )
+    if _has_http_method_substring(redacted):
+        redacted = _LOG_HTTP_REQUEST_RE.sub(
+            lambda match: _redact_strict_url_credentials(match.group(0)),
+            redacted,
+        )
+    return redacted
 
 
 def redact_cdp_url(value: object) -> str:
@@ -635,6 +687,19 @@ def redact_sensitive_text(
                     return m.group(0)
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
+        if ":" in text and "'" in text:
+            text = _PY_MAPPING_CONNECTION_FIELD_RE.sub(
+                lambda m: f"{m.group(1)}'{_mask_token(m.group(2))}'",
+                text,
+            )
+        if ":" in text:
+            text = _YAML_CONNECTION_FIELD_RE.sub(
+                lambda m: (
+                    f"{m.group(1)}{m.group(2)}{m.group(3)}"
+                    f"{_mask_token(m.group(4))}{m.group(3)}"
+                ),
+                text,
+            )
 
         # Unquoted YAML / colon config: password: ***  (after JSON so quoted
         # values are handled there; the lookahead in _YAML_ASSIGN_RE skips
@@ -869,4 +934,4 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_sensitive_text(original)
+        return redact_log_text(original)

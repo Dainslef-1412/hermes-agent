@@ -313,6 +313,113 @@ class TestGatewayMode:
         assert gw_log.exists()
         assert "telegram connected" in gw_log.read_text()
 
+    def test_gateway_log_redacts_sensitive_websocket_query_params(self, hermes_home):
+        """Third-party platform URLs must not persist connection credentials."""
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        gw_logger = logging.getLogger("hermes_plugins.feishu_platform.sdk")
+        gw_logger.info(
+            "connected to %s",
+            (
+                "wss://msg-frontier.feishu.cn/ws/v2"
+                "?fpid=493"
+                "&access_key=opaque-feishu-access-key"
+                "&ticket=opaque-feishu-ticket"
+            ),
+        )
+        gw_logger.info(
+            "reconnected to %r",
+            (
+                "wss://msg-frontier.feishu.cn/ws/v2"
+                "?ticket=second-opaque-ticket"
+                "&%61ccess%5Fkey=second-opaque-access-key"
+                "&token_count=7"
+            ),
+        )
+        gw_logger.info("decision?code=E42&key=cache")
+        gw_logger.info(
+            "payload=%s",
+            {
+                "access_key": "structured-opaque-access-key",
+                "ticket": "structured-opaque-ticket",
+            },
+        )
+        gw_logger.info(
+            'json={"access_key":"json-opaque-access-key",'
+            '"ticket":"json-opaque-ticket"}'
+        )
+        gw_logger.info(
+            "yaml=\naccess_key: yaml-opaque-access-key\n"
+            "ticket: yaml-opaque-ticket"
+        )
+        gw_logger.info(
+            "diagnostics=\nticket_count: 7\nsupport_ticket: 12345\n"
+            "access_key_rotation: complete"
+        )
+
+        hermes_logging.flush_log_queue()
+
+        content = (hermes_home / "logs" / "gateway.log").read_text()
+        assert "opaque-feishu-access-key" not in content
+        assert "opaque-feishu-ticket" not in content
+        assert "second-opaque-access-key" not in content
+        assert "second-opaque-ticket" not in content
+        for structured_secret in (
+            "structured-opaque-access-key",
+            "structured-opaque-ticket",
+            "json-opaque-access-key",
+            "json-opaque-ticket",
+            "yaml-opaque-access-key",
+            "yaml-opaque-ticket",
+        ):
+            assert structured_secret not in content
+        assert "access_key=***" in content
+        assert "ticket=***" in content
+        assert "%61ccess%5Fkey=***" in content
+        assert "fpid=493" in content
+        assert "token_count=7" in content
+        assert "decision?code=E42&key=cache" in content
+        assert "ticket_count: 7" in content
+        assert "support_ticket: 12345" in content
+        assert "access_key_rotation: complete" in content
+
+        agent_content = (hermes_home / "logs" / "agent.log").read_text()
+        assert "opaque-feishu-access-key" not in agent_content
+        assert "opaque-feishu-ticket" not in agent_content
+
+    def test_gateway_setup_secures_existing_log_and_rotation_backups(
+        self, hermes_home
+    ):
+        log_dir = hermes_home / "logs"
+        log_dir.mkdir(parents=True)
+        gateway_log = log_dir / "gateway.log"
+        gateway_backup = log_dir / "gateway.log.1"
+        stale_gateway_backup = log_dir / "gateway.log.9"
+        gateway_log.write_text("existing\n")
+        gateway_backup.write_text("rotated\n")
+        stale_gateway_backup.write_text("stale rotated\n")
+        gateway_log.chmod(0o644)
+        gateway_backup.chmod(0o644)
+        stale_gateway_backup.chmod(0o644)
+
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        assert stat.S_IMODE(gateway_log.stat().st_mode) == 0o600
+        assert stat.S_IMODE(gateway_backup.stat().st_mode) == 0o600
+        assert stat.S_IMODE(stale_gateway_backup.stat().st_mode) == 0o600
+
+    def test_gateway_setup_creates_owner_only_log_under_permissive_umask(
+        self, hermes_home
+    ):
+        previous_umask = os.umask(0o022)
+        try:
+            hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+        finally:
+            os.umask(previous_umask)
+
+        gateway_log = hermes_home / "logs" / "gateway.log"
+        assert stat.S_IMODE(gateway_log.stat().st_mode) == 0o600
+
     def test_gateway_log_rejects_non_gateway_records(self, hermes_home):
         """gateway.log does NOT capture records from tools.*, agent.*, etc."""
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")

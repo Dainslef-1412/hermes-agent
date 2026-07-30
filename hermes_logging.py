@@ -413,17 +413,15 @@ def setup_verbose_logging() -> None:
 # ---------------------------------------------------------------------------
 
 class _ManagedRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that ensures group-writable perms in managed mode
-    AND survives external rotation.
+    """RotatingFileHandler that enforces private/shared perms and survives
+    external rotation.
 
     Two responsibilities:
 
-    1.  In managed mode (NixOS), the stateDir uses setgid (2770) so new files
-        inherit the hermes group. However, both ``_open()`` (initial creation)
-        and ``doRollover()`` create files via ``open()``, which uses the
-        process umask — typically 0022, producing 0644. This subclass applies
-        ``chmod 0660`` after both operations so the gateway and interactive
-        users can share log files.
+    1.  Ordinary installations keep logs owner-only (0600). In managed mode
+        (NixOS), the stateDir uses setgid and logs remain group-shared (0660).
+        The policy covers new files, existing files, numeric rotation backups,
+        internal rollover, and external rotation/reopen.
 
     2.  ``RotatingFileHandler`` keeps an open file descriptor.  If anything
         rotates the file *externally* (``logrotate``, manual ``mv``,
@@ -441,18 +439,36 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
         super().__init__(*args, **kwargs)
+        self._secure_log_permissions(include_backups=True)
         # Snapshot the inode of the currently open stream so emit() can
         # detect external rotation without an extra fstat per write.
         self._stat_dev: Optional[int] = None
         self._stat_ino: Optional[int] = None
         self._record_stream_stat()
 
-    def _chmod_if_managed(self):
-        if self._managed:
+    def _desired_file_mode(self) -> int:
+        return 0o660 if self._managed else 0o600
+
+    def _secure_log_permissions(self, *, include_backups: bool = False) -> None:
+        paths = [self.baseFilename]
+        if include_backups:
+            base_path = Path(self.baseFilename)
+            prefix = f"{base_path.name}."
+            paths.extend(
+                str(candidate)
+                for candidate in base_path.parent.glob(f"{base_path.name}.*")
+                if candidate.name.startswith(prefix)
+                and candidate.name[len(prefix):].isdigit()
+            )
+        for path in paths:
             try:
-                os.chmod(self.baseFilename, 0o660)
+                os.chmod(path, self._desired_file_mode())
+            except FileNotFoundError:
+                continue
             except OSError:
-                pass
+                # Logging must remain best-effort. A later reopen/rollover
+                # retries the same policy instead of disabling the sink.
+                continue
 
     def _record_stream_stat(self) -> None:
         """Snapshot dev/ino of ``baseFilename`` so we can detect external rotation."""
@@ -535,13 +551,23 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         super().handleError(record)
 
     def _open(self):
+        if os.name != "nt":
+            # Create a missing file with a secure mode before TextIO opens it.
+            # For non-managed installs, 0600 is unaffected by the process
+            # umask; managed installs are chmod'd to 0660 immediately below.
+            fd = os.open(
+                self.baseFilename,
+                os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+                self._desired_file_mode(),
+            )
+            os.close(fd)
         stream = super()._open()
-        self._chmod_if_managed()
+        self._secure_log_permissions()
         return stream
 
     def doRollover(self):
         super().doRollover()
-        self._chmod_if_managed()
+        self._secure_log_permissions(include_backups=True)
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.
         self._record_stream_stat()
