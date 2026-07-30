@@ -219,11 +219,15 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     Extracted into a helper so tests can exercise the logic without
     spawning a subprocess.
     """
+    try:
+        from tools.env_passthrough import (
+            is_env_passthrough as _ep,
+            is_env_passthrough_forbidden as _ep_forbidden,
+        )
+    except Exception:
+        _ep = lambda _: False  # noqa: E731
+        _ep_forbidden = lambda name: name == "HERMES_SESSION_KEY"  # noqa: E731
     if is_passthrough is None:
-        try:
-            from tools.env_passthrough import is_env_passthrough as _ep
-        except Exception:
-            _ep = lambda _: False  # noqa: E731
         is_passthrough = _ep
     if is_windows is None:
         is_windows = _IS_WINDOWS
@@ -238,6 +242,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     # diagnosable and points at the env_passthrough opt-in escape hatch.
     _dropped_hermes = []
     for k, v in source_env.items():
+        if _ep_forbidden(k):
+            continue
         if is_passthrough(k):
             scrubbed[k] = v
             continue
@@ -1360,7 +1366,22 @@ def execute_code(
         # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
-        child_env = _scrub_child_env(os.environ)
+        #
+        # Bridge gateway session ContextVars (HERMES_SESSION_*) into the child
+        # env before scrubbing. Session vars live in ContextVars, not os.environ
+        # (set_session_vars never writes os.environ for these), so without this
+        # bridge a sandbox script can't read HERMES_SESSION_PLATFORM etc. even
+        # when the skill declares them via required_environment_variables. The
+        # subsequent _scrub_child_env still drops non-passthrough HERMES_* vars,
+        # so this only takes effect for vars the loaded skill explicitly opts in.
+        # Mirrors tools/environments/local.py::_inject_session_context_env.
+        _child_env_source = dict(os.environ)
+        try:
+            from tools.environments.local import _inject_session_context_env
+            _inject_session_context_env(_child_env_source)
+        except Exception:
+            pass
+        child_env = _scrub_child_env(_child_env_source)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["HERMES_RPC_TOKEN"] = rpc_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"

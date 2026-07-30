@@ -56,6 +56,12 @@ class TestSkillScopedPassthrough:
         assert is_env_passthrough("VALID_KEY")
         assert not is_env_passthrough("")
 
+    def test_passthrough_cannot_register_session_key(self):
+        """A skill must not receive the gateway's approval-routing key."""
+        register_env_passthrough(["HERMES_SESSION_KEY"])
+
+        assert not is_env_passthrough("HERMES_SESSION_KEY")
+
 
 class TestConfigPassthrough:
     def test_reads_from_config(self, tmp_path, monkeypatch):
@@ -105,9 +111,34 @@ class TestConfigPassthrough:
         assert "CONFIG_KEY" in all_pt
         assert "SKILL_KEY" in all_pt
 
+    def test_config_cannot_register_session_key(self, tmp_path, monkeypatch):
+        config = {"terminal": {"env_passthrough": ["HERMES_SESSION_KEY"]}}
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _ep_mod._config_passthrough = None
+
+        assert not is_env_passthrough("HERMES_SESSION_KEY")
+        assert "HERMES_SESSION_KEY" not in get_all_passthrough()
+
 
 class TestExecuteCodeIntegration:
     """Verify that the passthrough is checked in execute_code's env filtering."""
+
+    def test_session_key_block_is_independent_of_passthrough_callback(self):
+        from tools.code_execution_tool import _scrub_child_env
+
+        result = _scrub_child_env(
+            {
+                "HERMES_SESSION_KEY": "review-dummy-session-key",
+                "PATH": "/usr/bin",
+            },
+            is_passthrough=lambda _name: True,
+            is_windows=False,
+        )
+
+        assert "HERMES_SESSION_KEY" not in result
+        assert result["PATH"] == "/usr/bin"
 
     def test_secret_substring_blocked_by_default(self):
         """TENOR_API_KEY should be blocked without passthrough."""

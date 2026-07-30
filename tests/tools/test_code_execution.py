@@ -800,6 +800,48 @@ class TestEnvVarFiltering(unittest.TestCase):
         child_env = self._get_child_env()
         self.assertEqual(child_env.get("PYTHONDONTWRITEBYTECODE"), "1")
 
+    def test_registered_session_context_reaches_child_without_warning(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.env_passthrough import (
+            clear_env_passthrough,
+            register_env_passthrough,
+        )
+
+        register_env_passthrough(["HERMES_SESSION_PLATFORM"])
+        tokens = set_session_vars(platform="feishu")
+        try:
+            with patch(
+                "tools.approval.check_execute_code_guard",
+                return_value={"approved": True, "user_approved": True},
+            ), self.assertNoLogs("tools.code_execution_tool", level="WARNING"):
+                child_env = self._get_child_env()
+        finally:
+            clear_session_vars(tokens)
+            clear_env_passthrough()
+
+        self.assertEqual(child_env.get("HERMES_SESSION_PLATFORM"), "feishu")
+
+    def test_registered_session_key_does_not_reach_child(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.env_passthrough import (
+            clear_env_passthrough,
+            register_env_passthrough,
+        )
+
+        register_env_passthrough(["HERMES_SESSION_KEY"])
+        tokens = set_session_vars(session_key="review-dummy-session-key")
+        try:
+            with patch(
+                "tools.approval.check_execute_code_guard",
+                return_value={"approved": True, "user_approved": True},
+            ):
+                child_env = self._get_child_env()
+        finally:
+            clear_session_vars(tokens)
+            clear_env_passthrough()
+
+        self.assertNotIn("HERMES_SESSION_KEY", child_env)
+
     def test_timezone_injected_when_set(self):
         env_backup = os.environ.copy()
         try:

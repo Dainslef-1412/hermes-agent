@@ -2015,12 +2015,33 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # constructs a fresh one — no stale closed transport can be reused.
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
+    base_url = str(client_kwargs.get("base_url", "") or "")
+    is_chatgpt_codex = (
+        base_url_host_matches(base_url, "chatgpt.com")
+        and "/backend-api/codex" in base_url.lower()
+    )
+    # The ChatGPT Codex SSE endpoint is sensitive to custom httpx clients when
+    # reached through local HTTP proxies: the connection succeeds but no stream
+    # event arrives, while the SDK default transport works on the same proxy.
+    # Keep Hermes' tuned keepalive client for other providers and let the OpenAI
+    # SDK build its normal proxy-aware transport for this endpoint. When Hermes
+    # resolved a non-default TLS policy, use the SDK's own default client class
+    # so the policy is preserved without reintroducing the custom keepalive
+    # transport that stalls Codex SSE streams.
     if "http_client" not in client_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(
-            client_kwargs.get("base_url", ""), verify=httpx_verify,
-        )
-        if keepalive_http is not None:
-            client_kwargs["http_client"] = keepalive_http
+        if is_chatgpt_codex:
+            if httpx_verify is not True:
+                from openai import DefaultHttpxClient
+
+                client_kwargs["http_client"] = DefaultHttpxClient(
+                    verify=httpx_verify,
+                )
+        else:
+            keepalive_http = agent._build_keepalive_http_client(
+                base_url, verify=httpx_verify,
+            )
+            if keepalive_http is not None:
+                client_kwargs["http_client"] = keepalive_http
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
     # which honors Retry-After and applies adaptive/jittered backoff. The OpenAI
     # SDK default (max_retries=2) uses its own 1-2s backoff that ignores
