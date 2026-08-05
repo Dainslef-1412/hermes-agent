@@ -3322,7 +3322,6 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
@@ -3351,11 +3350,22 @@ class FeishuAdapter(BasePlatformAdapter):
 
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
+        source_chat_type = self._resolve_source_chat_type(
+            chat_info=chat_info, event_chat_type=chat_type
+        )
+        # Feishu sets ``root_id`` on every quoted reply. In a group that
+        # identifies the thread root, but a DM has no threads: adopting the
+        # quoted message as a thread root gives each reply a distinct
+        # ``thread_id``, and therefore a distinct session key, splitting one
+        # DM conversation into a new session per quoted reply.
+        thread_id = getattr(message, "thread_id", None)
+        if not thread_id and source_chat_type != "dm":
+            thread_id = getattr(message, "root_id", None) or None
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=source_chat_type,
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
