@@ -833,6 +833,65 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(media_types, ["audio/ogg"])
 
 
+    def _run_inbound_with_root_id(self, *, chat_type, chat_info_type):
+        """Drive one quoted-reply inbound message and return the built source."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu Chat", "type": chat_info_type}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="quoted")
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id="om_quoted_root",
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"reply body"}',
+            message_id="om_reply",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type=chat_type,
+                message_id="om_reply",
+            )
+        )
+        return adapter._dispatch_inbound_event.await_args.args[0]
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_dm_quoted_reply_does_not_adopt_root_id_as_thread_id(self):
+        """A DM has no threads, so ``root_id`` must not become ``thread_id``.
+
+        Feishu sets ``root_id`` on every quoted reply. Adopting it in a DM gives
+        each quoted reply a distinct thread and therefore a distinct session
+        key, splitting one conversation into a new session per reply.
+        """
+        event = self._run_inbound_with_root_id(chat_type="p2p", chat_info_type="dm")
+
+        self.assertEqual("dm", event.source.chat_type)
+        self.assertIsNone(event.source.thread_id)
+        # The quoted message is still surfaced as a reply, just not as a thread.
+        self.assertEqual("om_quoted_root", event.reply_to_message_id)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_group_quoted_reply_still_adopts_root_id_as_thread_id(self):
+        event = self._run_inbound_with_root_id(chat_type="group", chat_info_type="group")
+
+        self.assertEqual("group", event.source.chat_type)
+        self.assertEqual("om_quoted_root", event.source.thread_id)
+
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_message_starting_with_slash_becomes_command(self):
         from gateway.config import PlatformConfig
