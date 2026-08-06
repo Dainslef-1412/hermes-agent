@@ -32,6 +32,19 @@ logger = logging.getLogger(__name__)
 # Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
 _allowed_env_vars_var: ContextVar[set[str]] = ContextVar("_allowed_env_vars")
 
+# Request-scoped routing/approval capabilities must never be opted into the
+# execute_code sandbox, even when a skill or config explicitly requests
+# passthrough. HERMES_SESSION_KEY identifies the live gateway session used for
+# approval routing; exposing it could misroute session-scoped operations.
+_SENSITIVE_SESSION_CONTEXT_VARS = frozenset({
+    "HERMES_SESSION_KEY",
+})
+
+
+def is_env_passthrough_forbidden(var_name: str) -> bool:
+    """Return True when no skill or config may expose ``var_name``."""
+    return var_name in _SENSITIVE_SESSION_CONTEXT_VARS
+
 
 def _get_allowed() -> set[str]:
     """Get or create the allowed env vars set for the current context/session."""
@@ -110,6 +123,13 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
         name = name.strip()
         if not name:
             continue
+        if is_env_passthrough_forbidden(name):
+            logger.warning(
+                "env passthrough: refusing to register sensitive session "
+                "context variable %r",
+                name,
+            )
+            continue
         if _is_hermes_provider_credential(name):
             logger.warning(
                 "env passthrough: refusing to register Hermes provider "
@@ -139,6 +159,13 @@ def _load_config_passthrough() -> frozenset[str]:
                 if not isinstance(item, str) or not item.strip():
                     continue
                 name = item.strip()
+                if is_env_passthrough_forbidden(name):
+                    logger.warning(
+                        "env passthrough: refusing sensitive session context "
+                        "variable %r from config.yaml",
+                        name,
+                    )
+                    continue
                 # Mirror the skill-path filter in register_env_passthrough:
                 # Hermes-managed provider credentials must not be passed
                 # through to execute_code / terminal children, regardless of
@@ -169,6 +196,8 @@ def is_env_passthrough(var_name: str) -> bool:
     Returns ``True`` if the variable was registered by a skill or listed in
     the user's ``tools.env_passthrough`` config.
     """
+    if is_env_passthrough_forbidden(var_name):
+        return False
     if var_name in _get_allowed():
         return True
     return var_name in _load_config_passthrough()
@@ -176,7 +205,9 @@ def is_env_passthrough(var_name: str) -> bool:
 
 def get_all_passthrough() -> frozenset[str]:
     """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_get_allowed()) | _load_config_passthrough()
+    return (
+        frozenset(_get_allowed()) | _load_config_passthrough()
+    ) - _SENSITIVE_SESSION_CONTEXT_VARS
 
 
 def resolve_passthrough_value(
