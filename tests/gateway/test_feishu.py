@@ -1,7 +1,9 @@
 """Tests for the Feishu gateway integration."""
 
 import asyncio
+import io
 import json
+import logging
 import os
 import socket
 import tempfile
@@ -711,6 +713,76 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_nonce, 2)
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
+
+    def test_official_ws_sdk_logs_only_through_redacting_hermes_handler(self):
+        import lark_oapi.ws.client as ws_client_module
+
+        from agent.redact import RedactingFormatter
+
+        direct_stream = io.StringIO()
+        sdk_logger = ws_client_module.logger
+        original_handlers = list(sdk_logger.handlers)
+        self.assertTrue(original_handlers)
+        original_streams = {
+            handler: handler.stream
+            for handler in original_handlers
+            if isinstance(handler, logging.StreamHandler)
+        }
+        self.assertTrue(original_streams)
+        for handler in original_streams:
+            handler.setStream(direct_stream)
+        original_level = sdk_logger.level
+        original_propagate = sdk_logger.propagate
+        original_loop = ws_client_module.loop
+        try:
+            original_event_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            original_event_loop = None
+        sdk_logger.setLevel(logging.INFO)
+
+        hermes_stream = io.StringIO()
+        hermes_handler = logging.StreamHandler(hermes_stream)
+        hermes_handler.setFormatter(RedactingFormatter("%(message)s"))
+        root = logging.getLogger()
+        root.addHandler(hermes_handler)
+
+        class _FakeWSClient:
+            def start(self):
+                ws_client_module.logger.info(
+                    "connected to wss://msg-frontier.feishu.cn/ws/v2"
+                    "?access_key=opaque-access-key&ticket=opaque-ticket"
+                )
+                raise RuntimeError("stop test client")
+
+        fake_adapter = SimpleNamespace(
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+        )
+
+        try:
+            from plugins.platforms.feishu.adapter import (
+                _run_official_feishu_ws_client,
+            )
+
+            _run_official_feishu_ws_client(_FakeWSClient(), fake_adapter)
+        finally:
+            root.removeHandler(hermes_handler)
+            for handler, stream in original_streams.items():
+                handler.setStream(stream)
+            sdk_logger.handlers = original_handlers
+            sdk_logger.setLevel(original_level)
+            sdk_logger.propagate = original_propagate
+            ws_client_module.loop = original_loop
+            asyncio.set_event_loop(original_event_loop)
+
+        self.assertEqual(direct_stream.getvalue(), "")
+        self.assertNotIn("opaque-access-key", hermes_stream.getvalue())
+        self.assertNotIn("opaque-ticket", hermes_stream.getvalue())
+        self.assertIn("access_key=***", hermes_stream.getvalue())
+        self.assertIn("ticket=***", hermes_stream.getvalue())
 
 
 def _admits_group(adapter, message, sender_id, chat_id=""):

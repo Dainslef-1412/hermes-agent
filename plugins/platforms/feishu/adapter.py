@@ -1312,6 +1312,17 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
 
+    # The official SDK installs its own unredacted StreamHandler on the shared
+    # ``Lark`` logger.  With propagation enabled, each record otherwise reaches
+    # both that handler (raw stderr/journald) and Hermes' redacting handlers.
+    # Route SDK records exclusively through the already-configured Hermes root
+    # handlers before the client can log its credential-bearing connection URL.
+    sdk_logger = getattr(ws_client_module, "logger", None)
+    if isinstance(sdk_logger, logging.Logger):
+        for sdk_handler in list(sdk_logger.handlers):
+            sdk_logger.removeHandler(sdk_handler)
+        sdk_logger.propagate = True
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     ws_client_module.loop = loop
