@@ -81,6 +81,56 @@ def _close_submitted_coro(coro, _loop):
 
 
 # ===========================================================================
+# send_interactive_card — generic edge transport for business plugins
+# ===========================================================================
+
+class TestFeishuInteractiveCardTransport:
+    """A plugin can send a card without borrowing command-approval state."""
+
+    @pytest.mark.asyncio
+    async def test_sends_generic_interactive_card_without_approval_state(self):
+        adapter = _make_adapter()
+        card = {
+            "header": {"title": {"tag": "plain_text", "content": "Weekly Review"}},
+            "elements": [
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "Confirm"},
+                            "value": {"action": "confirm_operating_review", "draft_id": "draft-1"},
+                        }
+                    ],
+                }
+            ],
+        }
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_review_001"),
+        )
+
+        with patch.object(
+            adapter,
+            "_feishu_send_with_retry",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_interactive_card("oc_review", card)
+
+        assert result.success is True
+        assert result.message_id == "msg_review_001"
+        mock_send.assert_awaited_once_with(
+            chat_id="oc_review",
+            msg_type="interactive",
+            payload=json.dumps(card, ensure_ascii=False),
+            reply_to=None,
+            metadata=None,
+        )
+        assert adapter._approval_state == {}
+
+
+# ===========================================================================
 # send_exec_approval — interactive card with buttons
 # ===========================================================================
 
@@ -445,5 +495,4 @@ class TestResolveUpdatePrompt:
 
         assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
         assert 1 not in adapter._update_prompt_state
-
 

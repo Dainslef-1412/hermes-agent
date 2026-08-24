@@ -2041,6 +2041,35 @@ class FeishuAdapter(BasePlatformAdapter):
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 3000
 
+    async def send_interactive_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a caller-provided Feishu card without command-approval state."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not chat_id or not isinstance(card, dict):
+            return SendResult(success=False, error="Invalid interactive card")
+
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(
+                response,
+                "send_interactive_card failed",
+            )
+        except Exception as exc:
+            logger.warning("[Feishu] send_interactive_card failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
