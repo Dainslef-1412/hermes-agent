@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict
@@ -1081,6 +1082,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.user_name, "张三")
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
+        self.assertEqual(event.source.message_id, event.message_id)
 
 
     @patch.dict(
@@ -1113,13 +1115,28 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _run() -> None:
             with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="A", message_type=MessageType.TEXT, source=source, message_id="om_1")
+                    MessageEvent(
+                        text="A",
+                        message_type=MessageType.TEXT,
+                        source=replace(source, message_id="om_1"),
+                        message_id="om_1",
+                    )
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="B", message_type=MessageType.TEXT, source=source, message_id="om_2")
+                    MessageEvent(
+                        text="B",
+                        message_type=MessageType.TEXT,
+                        source=replace(source, message_id="om_2"),
+                        message_id="om_2",
+                    )
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="C", message_type=MessageType.TEXT, source=source, message_id="om_3")
+                    MessageEvent(
+                        text="C",
+                        message_type=MessageType.TEXT,
+                        source=replace(source, message_id="om_3"),
+                        message_id="om_3",
+                    )
                 )
                 pending = list(adapter._pending_text_batch_tasks.values())
                 self.assertEqual(len(pending), 1)
@@ -1131,6 +1148,7 @@ class TestAdapterBehavior(unittest.TestCase):
         first = adapter.handle_message.await_args_list[0].args[0]
         second = adapter.handle_message.await_args_list[1].args[0]
         self.assertEqual(first.text, "A\nB")
+        self.assertEqual(first.source.message_id, first.message_id)
         self.assertEqual(second.text, "C")
 
     @patch.dict(os.environ, {}, clear=True)
