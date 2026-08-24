@@ -358,6 +358,7 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
 
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
     def test_official_ws_sdk_logs_only_through_redacting_hermes_handler(self):
         import lark_oapi.ws.client as ws_client_module
 
@@ -2596,5 +2597,4 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
 
