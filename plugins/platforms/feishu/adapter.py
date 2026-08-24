@@ -3411,6 +3411,7 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            message_id=message_id,
         )
         normalized = MessageEvent(
             text=text,
@@ -3809,6 +3810,7 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+            existing.source.message_id = event.message_id
         self._pending_text_batch_counts[key] = next_count
         self._schedule_text_batch_flush(key)
 
