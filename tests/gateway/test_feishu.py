@@ -132,6 +132,65 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertIn("extra_ua_tags", signature.parameters)
 
 
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+    def test_websocket_card_frame_is_dispatched_and_acknowledged(self):
+        """Card actions must reach the registered handler and receive an ACK."""
+        import base64
+
+        from lark_oapi.ws.const import (
+            HEADER_MESSAGE_ID,
+            HEADER_SEQ,
+            HEADER_SUM,
+            HEADER_TRACE_ID,
+            HEADER_TYPE,
+        )
+        from lark_oapi.ws.enum import MessageType
+        from lark_oapi.ws.pb.pbbp2_pb2 import Frame
+
+        from plugins.platforms.feishu.adapter import FeishuWSClient
+
+        event_handler = SimpleNamespace(
+            _do_without_validation=Mock(return_value={"toast": {"type": "success"}})
+        )
+        client = FeishuWSClient(
+            app_id="cli_test",
+            app_secret="secret_test",
+            event_handler=event_handler,
+        )
+        client._write_message = AsyncMock()
+
+        frame = Frame()
+        frame.SeqID = 1
+        frame.LogID = 1
+        frame.service = 1
+        frame.method = 1
+        for key, value in (
+            (HEADER_MESSAGE_ID, "message-1"),
+            (HEADER_TRACE_ID, "trace-1"),
+            (HEADER_SUM, "1"),
+            (HEADER_SEQ, "0"),
+            (HEADER_TYPE, MessageType.CARD.value),
+        ):
+            header = frame.headers.add()
+            header.key = key
+            header.value = value
+        payload = b'{"schema":"2.0","event":{"type":"card.action.trigger"}}'
+        frame.payload = payload
+
+        asyncio.run(client._handle_data_frame(frame))
+
+        event_handler._do_without_validation.assert_called_once_with(payload)
+        client._write_message.assert_awaited_once()
+        ack_frame = Frame()
+        ack_frame.ParseFromString(client._write_message.await_args.args[0])
+        ack = json.loads(ack_frame.payload.decode("utf-8"))
+        self.assertEqual(ack["code"], 200)
+        self.assertEqual(
+            json.loads(base64.b64decode(ack["data"]).decode("utf-8")),
+            {"toast": {"type": "success"}},
+        )
+
+
     def test_disconnect_sends_websocket_close_frame(self):
         """Regression test for #10202: disconnect() must call the WSS
         client's ``_disconnect()`` coroutine so a WebSocket CLOSE frame
@@ -2615,4 +2674,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-

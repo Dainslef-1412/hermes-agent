@@ -125,6 +125,80 @@ except ImportError:
     FEISHU_DOMAIN = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
 
+
+def _with_card_frame_dispatch(base_client):
+    """Restore CARD-frame dispatch omitted by lark-oapi's WebSocket client."""
+
+    class HermesFeishuWSClient(base_client):
+        async def _handle_data_frame(self, frame):
+            import base64
+            import http
+
+            from lark_oapi.core.const import UTF_8
+            from lark_oapi.core.json import JSON
+            from lark_oapi.ws.client import _get_by_key
+            from lark_oapi.ws.const import (
+                HEADER_BIZ_RT,
+                HEADER_MESSAGE_ID,
+                HEADER_SEQ,
+                HEADER_SUM,
+                HEADER_TRACE_ID,
+                HEADER_TYPE,
+            )
+            from lark_oapi.ws.enum import MessageType as WSMessageType
+            from lark_oapi.ws.model import Response
+
+            headers = frame.headers
+            message_id = _get_by_key(headers, HEADER_MESSAGE_ID)
+            trace_id = _get_by_key(headers, HEADER_TRACE_ID)
+            frame_sum = _get_by_key(headers, HEADER_SUM)
+            sequence = _get_by_key(headers, HEADER_SEQ)
+            message_type = WSMessageType(_get_by_key(headers, HEADER_TYPE))
+
+            if message_type != WSMessageType.CARD:
+                return await super()._handle_data_frame(frame)
+
+            payload = frame.payload
+            if int(frame_sum) > 1:
+                payload = self._combine(
+                    message_id,
+                    int(frame_sum),
+                    int(sequence),
+                    payload,
+                )
+                if payload is None:
+                    return
+
+            response = Response(code=http.HTTPStatus.OK)
+            try:
+                started_at = int(round(time.time() * 1000))
+                result = self._event_handler._do_without_validation(payload)
+                header = headers.add()
+                header.key = HEADER_BIZ_RT
+                header.value = str(int(round(time.time() * 1000)) - started_at)
+                if result is not None:
+                    response.data = base64.b64encode(JSON.marshal(result).encode(UTF_8))
+            except Exception as exc:
+                logger.error(
+                    "[Feishu] WebSocket %s frame handling failed "
+                    "(message_id=%s trace_id=%s): %s",
+                    message_type.value,
+                    message_id,
+                    trace_id,
+                    exc,
+                )
+                response = Response(code=http.HTTPStatus.INTERNAL_SERVER_ERROR)
+
+            frame.payload = JSON.marshal(response).encode(UTF_8)
+            await self._write_message(frame.SerializeToString())
+
+    HermesFeishuWSClient.__name__ = "HermesFeishuWSClient"
+    return HermesFeishuWSClient
+
+
+if FEISHU_AVAILABLE:
+    FeishuWSClient = _with_card_frame_dispatch(FeishuWSClient)
+
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
@@ -1434,7 +1508,7 @@ def check_feishu_requirements() -> bool:
             CallBackCard, P2CardActionTriggerResponse,
         )
         from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-        from lark_oapi.ws import Client as FeishuWSClient
+        from lark_oapi.ws import Client as LarkFeishuWSClient
         return {
             "lark": lark,
             "GetApplicationRequest": GetApplicationRequest,
@@ -1460,7 +1534,7 @@ def check_feishu_requirements() -> bool:
             "CallBackCard": CallBackCard,
             "P2CardActionTriggerResponse": P2CardActionTriggerResponse,
             "EventDispatcherHandler": EventDispatcherHandler,
-            "FeishuWSClient": FeishuWSClient,
+            "FeishuWSClient": _with_card_frame_dispatch(LarkFeishuWSClient),
             "FEISHU_AVAILABLE": True,
         }
 
