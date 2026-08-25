@@ -133,6 +133,12 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
+    if platform == "feishu":
+        callback_event = getattr(raw_message, "event", None)
+        if getattr(callback_event, "token", None):
+            # A card callback token proves the click's provenance, but it is
+            # not an open_message_id and cannot be used as a reply anchor.
+            return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
