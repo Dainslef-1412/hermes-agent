@@ -2837,7 +2837,12 @@ class FeishuAdapter(BasePlatformAdapter):
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
             return None
-        return P2CardActionTriggerResponse()
+        return P2CardActionTriggerResponse({
+            "toast": {
+                "type": "info",
+                "content": "已收到，正在处理",
+            },
+        })
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:
