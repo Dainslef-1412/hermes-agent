@@ -3753,6 +3753,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._on_reaction_event(event_type, data)
         elif event_type == "card.action.trigger":
             self._on_card_action_trigger(data)
+            return web.json_response({})
         elif event_type == "drive.notice.comment_add_v1":
             self._on_drive_comment_event(data)
         elif event_type == "vc.bot.meeting_invited_v1":
