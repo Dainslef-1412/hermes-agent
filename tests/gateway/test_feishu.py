@@ -502,6 +502,39 @@ def _admits_group(adapter, message, sender_id, chat_id=""):
 
 class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
+    def test_generic_card_action_returns_processing_toast(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._loop = SimpleNamespace(is_closed=lambda: False)
+
+        def submit(_loop, coro):
+            coro.close()
+            return True
+
+        adapter._submit_on_loop = Mock(side_effect=submit)
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                action=SimpleNamespace(value={"action": "confirm"}),
+            ),
+        )
+
+        class FakeResponse:
+            def __init__(self, values=None):
+                toast = (values or {}).get("toast")
+                self.toast = SimpleNamespace(**toast) if toast else None
+
+        with patch(
+            "plugins.platforms.feishu.adapter.P2CardActionTriggerResponse",
+            FakeResponse,
+        ):
+            response = adapter._on_card_action_trigger(data)
+
+        self.assertEqual(response.toast.type, "info")
+        self.assertEqual(response.toast.content, "已收到，正在处理")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_build_event_handler_registers_reaction_and_card_processors(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
